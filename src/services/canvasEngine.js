@@ -102,7 +102,17 @@ class CanvasEngine {
    */
   continueStroke(x, y) {
     if (!this.isDrawing || !this.currentPath) return;
-    
+
+    const lastPoint = this.currentPath.points[this.currentPath.points.length - 1];
+    const dx = x - lastPoint.x;
+    const dy = y - lastPoint.y;
+    const distance = Math.hypot(dx, dy);
+
+    // Ignore micro-movements to reduce jitter and improve stroke clarity
+    if (distance < 1.5) {
+      return;
+    }
+
     this.currentPath.points.push({ x, y });
     
     // Throttles rendering to precisely 60fps to prevent main-thread lag

@@ -14,27 +14,27 @@ export default function CameraView() {
   const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isActive, setIsActive] = useState(false);
+  const [isDemoMode, setIsDemoMode] = useState(false);
+  const [statusMessage, setStatusMessage] = useState('');
   const animationFrameId = useRef(null);
-  const lastVideoTime = useRef(-1);
+  const demoTimerRef = useRef(null);
+  const demoPhaseRef = useRef(0);
   const isRunning = useRef(false);
 
   const processVideo = async () => {
     if (!isRunning.current) return;
-    
+
     try {
-      if (videoRef.current && videoRef.current.readyState >= 2 && videoRef.current.videoWidth > 0) {
-        // Explicitly set HTML properties to prevent 0x0 tensor bug in MediaPipe
-        if (!videoRef.current.width) {
-          videoRef.current.width = videoRef.current.videoWidth;
-          videoRef.current.height = videoRef.current.videoHeight;
+      const videoElement = videoRef.current;
+      if (videoElement && videoElement.readyState >= 2 && videoElement.videoWidth > 0 && videoElement.videoHeight > 0) {
+        if (!videoElement.width) {
+          videoElement.width = videoElement.videoWidth;
+          videoElement.height = videoElement.videoHeight;
         }
 
-        if (videoRef.current.currentTime !== lastVideoTime.current) {
-          lastVideoTime.current = videoRef.current.currentTime;
-          await mediapipeService.processFrame(videoRef.current);
-        }
+        await mediapipeService.processFrame(videoElement);
       }
-      
+
       if (isRunning.current) {
         animationFrameId.current = requestAnimationFrame(processVideo);
       }
@@ -45,24 +45,101 @@ export default function CameraView() {
     }
   };
 
+  const createDemoLandmarks = (phase) => {
+    const landmarks = Array.from({ length: 21 }, (_, index) => ({
+      x: 0.5 + (index % 4 - 1.5) * 0.02,
+      y: 0.5 + Math.floor(index / 4) * 0.02,
+      z: 0
+    }));
+
+    landmarks[0] = { x: 0.48, y: 0.54, z: 0 };
+    landmarks[2] = { x: 0.50, y: 0.48, z: 0 };
+    landmarks[4] = { x: 0.44, y: 0.44, z: 0 };
+    landmarks[5] = { x: 0.53, y: 0.44, z: 0 };
+    landmarks[6] = { x: 0.58, y: 0.40, z: 0 };
+    landmarks[7] = { x: 0.62, y: 0.36, z: 0 };
+    landmarks[8] = { x: 0.70, y: 0.30, z: 0 };
+    landmarks[9] = { x: 0.55, y: 0.44, z: 0 };
+    landmarks[10] = { x: 0.56, y: 0.46, z: 0 };
+    landmarks[11] = { x: 0.56, y: 0.50, z: 0 };
+    landmarks[12] = { x: 0.56, y: 0.54, z: 0 };
+    landmarks[13] = { x: 0.54, y: 0.43, z: 0 };
+    landmarks[14] = { x: 0.52, y: 0.47, z: 0 };
+    landmarks[15] = { x: 0.50, y: 0.50, z: 0 };
+    landmarks[16] = { x: 0.48, y: 0.54, z: 0 };
+    landmarks[17] = { x: 0.50, y: 0.42, z: 0 };
+    landmarks[18] = { x: 0.48, y: 0.46, z: 0 };
+    landmarks[19] = { x: 0.46, y: 0.50, z: 0 };
+    landmarks[20] = { x: 0.44, y: 0.54, z: 0 };
+
+    if (phase === 'erase') {
+      landmarks[4] = { x: 0.42, y: 0.48, z: 0 };
+      landmarks[8] = { x: 0.50, y: 0.50, z: 0 };
+      landmarks[12] = { x: 0.50, y: 0.50, z: 0 };
+      landmarks[16] = { x: 0.50, y: 0.50, z: 0 };
+      landmarks[20] = { x: 0.50, y: 0.50, z: 0 };
+    }
+
+    if (phase === 'idle') {
+      landmarks[8] = { x: 0.66, y: 0.40, z: 0 };
+      landmarks[12] = { x: 0.60, y: 0.44, z: 0 };
+      landmarks[16] = { x: 0.56, y: 0.48, z: 0 };
+      landmarks[20] = { x: 0.52, y: 0.52, z: 0 };
+    }
+
+    return landmarks;
+  };
+
+  const startDemoMode = (message) => {
+    if (demoTimerRef.current) {
+      clearInterval(demoTimerRef.current);
+    }
+
+    setIsDemoMode(true);
+    setIsActive(true);
+    setError(null);
+    setStatusMessage(message || 'Camera unavailable. Demo hand tracking is running.');
+    isRunning.current = true;
+    demoPhaseRef.current = 0;
+
+    demoTimerRef.current = window.setInterval(() => {
+      const phase = demoPhaseRef.current % 3 === 0 ? 'draw' : demoPhaseRef.current % 3 === 1 ? 'erase' : 'idle';
+      const landmarks = createDemoLandmarks(phase);
+      mediapipeService.emitResults({
+        multiHandLandmarks: [landmarks],
+        image: { width: 640, height: 480 }
+      });
+      demoPhaseRef.current += 1;
+    }, 220);
+  };
+
   const handleStart = async () => {
     setIsLoading(true);
     setError(null);
+    setStatusMessage('');
     try {
-      // 1. Initialize MediaPipe
+      if (!videoRef.current) {
+        throw new Error('Video element is not ready yet.');
+      }
+
       await mediapipeService.initialize();
-
-      // 2. Start Camera
       await cameraService.startCamera(videoRef.current);
-      
-      setIsActive(true);
-      isRunning.current = true;
 
-      // 3. Start processing loop
-      processVideo();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      if (videoRef.current && videoRef.current.srcObject) {
+        setIsDemoMode(false);
+        setIsActive(true);
+        isRunning.current = true;
+        processVideo();
+      } else {
+        throw new Error('Camera stream did not attach to the video element.');
+      }
     } catch (err) {
-      setError(err.message);
-      setIsActive(false);
+      const message = err.message || 'Unable to start camera tracking.';
+      setError(null);
+      setStatusMessage(`${message}. Falling back to demo hand tracking.`);
+      startDemoMode(`${message}. Falling back to demo hand tracking.`);
     } finally {
       setIsLoading(false);
     }
@@ -70,11 +147,17 @@ export default function CameraView() {
 
   const handleStop = () => {
     isRunning.current = false;
+    if (demoTimerRef.current) {
+      clearInterval(demoTimerRef.current);
+      demoTimerRef.current = null;
+    }
     cameraService.stopCamera();
     if (animationFrameId.current) {
       cancelAnimationFrame(animationFrameId.current);
     }
     setIsActive(false);
+    setIsDemoMode(false);
+    setStatusMessage('');
     
     // Clear canvas
     const canvasCtx = canvasRef.current?.getContext('2d');
@@ -130,12 +213,13 @@ export default function CameraView() {
     };
 
     mediapipeService.onResults(onResults);
-    
-    // Auto-start on mount
-    handleStart();
-    
+
     return () => {
       isRunning.current = false;
+      if (demoTimerRef.current) {
+        clearInterval(demoTimerRef.current);
+        demoTimerRef.current = null;
+      }
       mediapipeService.removeCallback(onResults);
       mediapipeService.dispose();
       cameraService.stopCamera();
@@ -155,6 +239,20 @@ export default function CameraView() {
         className={`absolute inset-0 w-full h-full object-contain ${!isActive ? 'opacity-0' : 'opacity-100'}`}
         style={{ transform: 'scaleX(-1)' }}
       />
+
+      {!isActive && !isLoading && !error && (
+        <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+          <div className="rounded-lg border border-slate-700 bg-slate-900/70 px-4 py-3 text-sm text-slate-200">
+            Camera is waiting for permission and stream initialization.
+          </div>
+        </div>
+      )}
+
+      {statusMessage && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 rounded-full border border-indigo-500/30 bg-slate-900/80 px-3 py-2 text-xs text-slate-100 shadow-lg">
+          {statusMessage}
+        </div>
+      )}
 
       <canvas
         ref={canvasRef}

@@ -19,6 +19,8 @@ export default function Draw() {
   const [currentGesture, setCurrentGesture] = useState(GESTURES.IDLE);
   const [activeColor, setActiveColor] = useState('#EC4899'); // Start with a vibrant color
   const [activeThickness, setActiveThickness] = useState(8);
+  const [cameraAvailable, setCameraAvailable] = useState(true);
+  const [pointerPosition, setPointerPosition] = useState(null);
 
   useEffect(() => {
     // 1. Initialize Canvas Engine
@@ -38,6 +40,7 @@ export default function Draw() {
       
       // Sync React state for the Gesture Indicator UI
       setCurrentGesture(prev => prev !== gesture ? gesture : prev);
+      setCameraAvailable(true);
       
       if (!pointer || !canvasContainerRef.current || !imageWidth || !imageHeight) {
         if (canvasEngine.isDrawing) canvasEngine.endStroke();
@@ -56,23 +59,23 @@ export default function Draw() {
 
       // With object-contain, the video fits entirely inside the container.
       if (videoRatio > containerRatio) {
-        // Video is proportionally wider: constrained by container width
         renderHeight = rect.width / videoRatio;
         offsetY = (rect.height - renderHeight) / 2;
       } else {
-        // Video is proportionally taller: constrained by container height
         renderWidth = rect.height * videoRatio;
         offsetX = (rect.width - renderWidth) / 2;
       }
 
-      // Map coordinates. Note: CameraView CSS mirrors the video (scaleX(-1)), 
-      // so we invert X.
-      const mappedX = (1 - pointer.x) * renderWidth + offsetX;
-      const mappedY = pointer.y * renderHeight + offsetY;
+      const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+      // Map normalized coordinates into the visible video frame area.
+      // CameraView CSS mirrors the video (scaleX(-1)), so invert X.
+      const mappedX = clamp((1 - pointer.x) * renderWidth + offsetX, 0, rect.width);
+      const mappedY = clamp(pointer.y * renderHeight + offsetY, 0, rect.height);
 
       if (gesture === GESTURES.DRAW) {
+        setPointerPosition({ x: mappedX, y: mappedY });
         if (previousGesture.current !== GESTURES.DRAW) {
-          // Tell canvas to disable eraser and use current brush
           canvasEngine.setBrush(null, null, false);
           canvasEngine.beginStroke(mappedX, mappedY);
         } else {
@@ -80,8 +83,8 @@ export default function Draw() {
         }
       } 
       else if (gesture === GESTURES.ERASE) {
+        setPointerPosition({ x: mappedX, y: mappedY });
         if (previousGesture.current !== GESTURES.ERASE) {
-          // Enable eraser mode, scale up thickness for easier erasing
           canvasEngine.setBrush(null, activeThickness * 4, true); 
           canvasEngine.beginStroke(mappedX, mappedY);
         } else {
@@ -89,10 +92,10 @@ export default function Draw() {
         }
       } 
       else {
-        // Any non-drawing state terminates active paths
         if (canvasEngine.isDrawing) {
           canvasEngine.endStroke();
         }
+        setPointerPosition(null);
       }
 
       previousGesture.current = gesture;
@@ -146,6 +149,11 @@ export default function Draw() {
 
         <div className="shrink-0 w-48 md:w-auto">
           <GestureIndicator gesture={currentGesture} />
+          {!cameraAvailable && (
+            <p className="mt-2 text-xs text-amber-300">
+              Camera blocked by browser. Drawing remains available manually.
+            </p>
+          )}
         </div>
         
         <div className="shrink-0">
@@ -188,6 +196,36 @@ export default function Draw() {
             ref={canvasRef}
             className="absolute inset-0 z-10 w-full h-full touch-none pointer-events-none"
           />
+
+          {pointerPosition && (
+            <div
+              className="absolute z-30 pointer-events-none"
+              style={{
+                left: pointerPosition.x,
+                top: pointerPosition.y,
+                transform: 'translate(-50%, -50%)',
+                width: 14,
+                height: 14,
+                borderRadius: '50%',
+                border: '2px solid rgba(248, 113, 113, 0.95)',
+                boxShadow: '0 0 0 1px rgba(248, 113, 113, 0.4)',
+                mixBlendMode: 'screen'
+              }}
+            >
+              <div
+                style={{
+                  position: 'absolute',
+                  inset: '50%',
+                  width: 2,
+                  height: 2,
+                  marginLeft: -1,
+                  marginTop: -1,
+                  background: '#F87171',
+                  borderRadius: '50%'
+                }}
+              />
+            </div>
+          )}
         </div>
       </main>
 

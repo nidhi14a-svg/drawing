@@ -33,9 +33,12 @@ class MediaPipeService {
 
         this.hands.setOptions({
           maxNumHands: 2,
-          modelComplexity: 1,
-          minDetectionConfidence: 0.5,
-          minTrackingConfidence: 0.5
+          modelComplexity: 0,
+          minDetectionConfidence: 0.2,
+          minTrackingConfidence: 0.2,
+          selfieMode: true,
+          refineLandmarks: true,
+          runningMode: 'VIDEO'
         });
 
         this.hands.onResults((results) => {
@@ -50,8 +53,10 @@ class MediaPipeService {
           });
         });
 
-        // We rely on MediaPipe's native lazy initialization during the first send() call
-        // instead of forcing it here, which prevents the strict mode CDN load failure.
+        // Explicitly initialize the AI model before allowing frames to be processed.
+        // This prevents the WebGL context from initializing concurrently with the first frame,
+        // which can permanently corrupt the tensor dimensions.
+        await this.hands.initialize();
         this.isInitialized = true;
       } catch (error) {
         console.error("Failed to initialize MediaPipe Hands:", error);
@@ -69,8 +74,10 @@ class MediaPipeService {
    * @param {HTMLVideoElement} videoElement
    */
   async processFrame(videoElement) {
-    if (!this.isInitialized || !this.hands) return;
-    console.log("📹 Sending frame to MediaPipe");
+    if (!this.isInitialized || !this.hands || !videoElement) return;
+    if (!videoElement.videoWidth || !videoElement.videoHeight) return;
+    if (videoElement.readyState < 2) return;
+
     try {
       await this.hands.send({ image: videoElement });
     } catch (error) {
@@ -85,6 +92,20 @@ class MediaPipeService {
    */
   onResults(callback) {
     this.callbacks.push(callback);
+  }
+
+  /**
+   * Emits a synthetic or fallback result set to subscribers.
+   * @param {Object} results
+   */
+  emitResults(results) {
+    this.callbacks.forEach(cb => {
+      try {
+        cb(results);
+      } catch (err) {
+        console.error('Error in emitted MediaPipe results callback:', err);
+      }
+    });
   }
 
   /**

@@ -9,11 +9,13 @@ export const GESTURES = {
 class GestureRecognitionEngine {
   constructor() {
     this.gestureHistory = [];
-    this.historyLength = 7; // Frames required for stabilization to reduce flickering
+    this.historyLength = 5; // Shorter buffer for faster feedback
     
     // Smoothing properties (Exponential Moving Average)
     this.smoothedPointer = null;
-    this.smoothingFactor = 0.35; // 0.0 to 1.0 (lower = smoother but higher latency)
+    this.lastPointer = null;
+    this.smoothingFactor = 0.22; // Lower latency for quicker drawing response
+    this.pointerThreshold = 0.006; // Ignore micro-movements
 
     this.currentGesture = GESTURES.IDLE;
     this.callbacks = [];
@@ -31,68 +33,78 @@ class GestureRecognitionEngine {
   }
 
   /**
-   * Determines if a standard finger is extended.
-   * Compares the distance of the tip to the wrist vs the PIP joint to the wrist.
+   * Determines if a finger is extended relative to its MCP and PIP joints.
    */
-  isFingerExtended(landmarks, tipIdx, pipIdx) {
-    const distTip = this.getDistance(landmarks[0], landmarks[tipIdx]);
-    const distPip = this.getDistance(landmarks[0], landmarks[pipIdx]);
-    return distTip > distPip;
+  isFingerExtended(landmarks, tipIdx, pipIdx, mcpIdx, threshold = 1.08) {
+    const tipPoint = landmarks[tipIdx];
+    const pipPoint = landmarks[pipIdx];
+    const mcpPoint = landmarks[mcpIdx];
+
+    if (!tipPoint || !pipPoint || !mcpPoint) return false;
+
+    const tipPipDist = this.getDistance(tipPoint, pipPoint);
+    const pipMcpDist = this.getDistance(pipPoint, mcpPoint);
+    return tipPipDist > pipMcpDist * threshold;
   }
 
   /**
    * Specifically handles thumb extension logic.
    */
   isThumbExtended(landmarks) {
-    const tipToPinkyBase = this.getDistance(landmarks[4], landmarks[17]);
-    const mcpToPinkyBase = this.getDistance(landmarks[2], landmarks[17]);
-    return tipToPinkyBase > mcpToPinkyBase;
+    const thumbTip = landmarks[4];
+    const thumbBase = landmarks[2];
+    const indexMcp = landmarks[5];
+
+    if (!thumbTip || !thumbBase || !indexMcp) return false;
+
+    const tipToBase = this.getDistance(thumbTip, thumbBase);
+    const baseToIndex = this.getDistance(thumbBase, indexMcp);
+    return tipToBase > baseToIndex * 0.85;
   }
 
   /**
    * Analyzes raw landmarks to classify the current frame's gesture based on new requirements.
    */
   detectRawGesture(landmarks) {
-    const thumbOpen = this.isThumbExtended(landmarks);
-    const indexOpen = this.isFingerExtended(landmarks, 8, 6);
-    const middleOpen = this.isFingerExtended(landmarks, 12, 10);
-    const ringOpen = this.isFingerExtended(landmarks, 16, 14);
-    const pinkyOpen = this.isFingerExtended(landmarks, 20, 18);
-
-    // Calculate pinch distances
-    const thumbIndexPinchDist = this.getDistance(landmarks[4], landmarks[8]);
-    
-    // Normalize distance by palm size to make it scale-invariant
-    const palmSize = this.getDistance(landmarks[0], landmarks[9]);
-    const isThumbIndexPinching = (thumbIndexPinchDist / palmSize) < 0.15;
-
-    // Highest priority: Brush Size (Thumb + Index Pinch)
-    // Ensure other fingers are mostly closed to prevent accidental triggers while grasping
-    if (isThumbIndexPinching && !middleOpen && !ringOpen && !pinkyOpen) {
-      return GESTURES.BRUSH_SIZE;
-    }
-
-    // Colour Selection: Index + Middle extended, others closed
-    if (indexOpen && middleOpen && !ringOpen && !pinkyOpen && !thumbOpen) {
-      return GESTURES.COLOR_SELECTION;
-    }
-
-    // Draw: Index finger only extended
-    if (indexOpen && !middleOpen && !ringOpen && !pinkyOpen && !thumbOpen) {
-      return GESTURES.DRAW;
-    }
-
-    // Erase: Closed fist (all fingers closed)
-    if (!thumbOpen && !indexOpen && !middleOpen && !ringOpen && !pinkyOpen) {
-      return GESTURES.ERASE;
-    }
-
-    // Idle: Open palm (all fingers extended)
-    if (thumbOpen && indexOpen && middleOpen && ringOpen && pinkyOpen) {
+    if (!landmarks || landmarks.length < 21) {
       return GESTURES.IDLE;
     }
 
-    // Fallback to idle for unrecognized poses
+    const indexTip = landmarks[8];
+    const indexPip = landmarks[6];
+    const middleTip = landmarks[12];
+    const middlePip = landmarks[10];
+    const ringTip = landmarks[16];
+    const ringPip = landmarks[14];
+    const pinkyTip = landmarks[20];
+    const pinkyPip = landmarks[18];
+    const thumbTip = landmarks[4];
+    const thumbBase = landmarks[2];
+    const wrist = landmarks[0];
+
+    const indexOpen = this.isFingerExtended(landmarks, 8, 6, 5, 1.1);
+    const middleOpen = this.isFingerExtended(landmarks, 12, 10, 9, 1.1);
+    const ringOpen = this.isFingerExtended(landmarks, 16, 14, 13, 1.1);
+    const pinkyOpen = this.isFingerExtended(landmarks, 20, 18, 17, 1.1);
+    const thumbOpen = this.isThumbExtended(landmarks);
+
+    const onlyIndexExtended = indexOpen && !middleOpen && !ringOpen && !pinkyOpen;
+    const mostlyIndexExtended = indexOpen && !middleOpen && !ringOpen && !pinkyOpen;
+    const allFingersClosed = !thumbOpen && !indexOpen && !middleOpen && !ringOpen && !pinkyOpen;
+    const openPalm = thumbOpen && indexOpen && middleOpen && ringOpen && pinkyOpen;
+
+    if (onlyIndexExtended || mostlyIndexExtended) {
+      return GESTURES.DRAW;
+    }
+
+    if (allFingersClosed) {
+      return GESTURES.ERASE;
+    }
+
+    if (openPalm) {
+      return GESTURES.IDLE;
+    }
+
     return GESTURES.IDLE;
   }
 
@@ -121,7 +133,11 @@ class GestureRecognitionEngine {
     
     // 3. Smooth coordinates (Index finger tip is the primary pointer: landmark 8)
     const rawPointer = primaryHandLandmarks[8];
-    
+    if (!rawPointer) {
+      this.resetState();
+      return;
+    }
+
     if (!this.smoothedPointer) {
       this.smoothedPointer = { ...rawPointer };
     } else {
@@ -130,9 +146,13 @@ class GestureRecognitionEngine {
       this.smoothedPointer.z += this.smoothingFactor * ((rawPointer.z || 0) - (this.smoothedPointer.z || 0));
     }
 
+    if (!this.lastPointer || this.getDistance(this.smoothedPointer, this.lastPointer) > this.pointerThreshold) {
+      this.lastPointer = { ...this.smoothedPointer };
+    }
+
     // 4. Update state and broadcast
     this.currentGesture = stabilizedGesture;
-    this.broadcast(this.smoothedPointer, rawPointer, results.image?.width, results.image?.height);
+    this.broadcast(this.lastPointer, rawPointer, results.image?.width || 640, results.image?.height || 480);
   }
 
   /**
@@ -161,10 +181,7 @@ class GestureRecognitionEngine {
   resetState() {
     this.gestureHistory = [];
     this.smoothedPointer = null;
-    if (this.currentGesture !== GESTURES.IDLE) {
-      this.currentGesture = GESTURES.IDLE;
-      this.broadcast(null, null, 0, 0);
-    }
+    this.broadcast(this.smoothedPointer, null, 0, 0);
   }
 
   broadcast(smoothedPointer, rawPointer, imageWidth = 0, imageHeight = 0) {
